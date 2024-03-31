@@ -1,19 +1,42 @@
 #!/bin/bash
+set -e
+
+function wegit_log()
+{
+  echo "[$1] $2"
+}
+
+function wegit_info()
+{
+  wegit_log "INFO" "$1"
+}
+
+function wegit_err()
+{
+  wegit_log "ERROR" "$1"
+}
+
+function wegit_note()
+{
+  wegit_log "NOTE" "$1"
+}
 
 function wegit_usage()
 {
-  echo "wegit usage: wegit <command>"
-  echo "COMMAND:"
-  echo "  init          # 初始化wegit仓库"
-  echo "  push          # 将开发分支修改合并到主分支,然后推送到远程仓库"
-  echo "  continue      # 解决冲突后执行,继续推送到远程仓库"
+  wegit_note "wegit usage: wegit <command>"
+  wegit_note "COMMAND:"
+  wegit_note "  init <person_branch>  # 初始化wegit仓库"
+  wegit_note "  push                  # 将开发分支修改合并到主分支,然后推送到远程仓库"
+  wegit_note "  continue              # 解决冲突后执行,继续推送到远程仓库"
+  wegit_note "  test [debug]          # 单元测试"
+  wegit_note "  mr                    # 提交MR" 
 }
 
 function wegit_main()
 {
   case $1 in
     init)
-      wegit_init
+      wegit_init $2
       ;;
     push)
       wegit_push
@@ -21,10 +44,232 @@ function wegit_main()
     continue)
       wegit_continue
       ;;
+    mr)
+      wegit_mr
+      ;;
+    test)
+      if [ "$2" = "debug" ]
+      then
+        set -x
+      fi
+      wegit_test
+      ;;
     *)
       wegit_usage
       ;;
   esac
 }
 
-wegit_main $1
+function wegit_is_init()
+{
+  if [ ! -d ".wegit" ]
+  then
+    return 1
+  fi
+
+  return 0
+}
+
+function wegit_get_bak_ver()
+{
+  dev_branch=$(wegit_get_dev_branch)
+  bak_ver=$(git branch | grep "${dev_branch}_" | wc -l)
+  bak_ver=$((bak_ver + 1))
+  echo $bak_ver
+}
+
+function wegit_flash_wegit_repo()
+{
+  cd .wegit
+  dev_branch=$(git branch --show-current)
+  if [ -z $dev_branch ]
+  then
+    dev_branch=$(date +%m%d_%H%M%S)
+  fi
+  echo "$dev_branch" > dev_branch
+  person_branch=$1
+  echo "$person_branch" > person_branch
+  bak_ver=$(wegit_get_dev_branch_bak_ver)
+  echo "$bak_ver" > dev_branch_bak_ver
+  cd .. 
+
+  git checkout -b $dev_branch > /dev/null
+}
+
+function wegit_init() # @unit_test
+{
+  if wegit_is_init
+  then
+    wegit_flash_wegit_repo $1
+    wegit_info "已重新初始化已存在的 WeGit 仓库于 ${cur_path}/.wegit"
+    exit 0
+  fi
+
+  person_branch=$1
+  if [ -z $person_branch ]
+  then
+    wegit_usage
+    exit 1
+  fi
+
+  mkdir .wegit
+
+  wegit_flash_wegit_repo $1
+  wegit_info "已初始化空的 WeGit 仓库于 ${cur_path}/.wegit/"
+}
+
+function wegit_push()
+{
+  if ! wegit_is_init
+  then
+    wegit_err "请先运行wegit init <branch>初始化wegit仓库"
+    wegit_usage
+  fi
+
+  remote_name=$(wegit_get_remote_name)
+  person_branch=$(wegit_get_person_branch)
+  git fetch $remote_name $person_branch
+  git checkout --detach
+  git branch -D $person_branch
+  git checkout -b $person_branch $remote_name/$person_branch
+
+  dev_branch=$(wegit_get_dev_branch)
+  conflict=$(git merge $dev_branch --squash | grep "CONFLICT")
+  if [ ! -z $conflict ]
+  then
+    wegit_note "请解决冲突后执行wegit continue"
+    exit 0
+  fi
+
+  wegit_continue
+}
+
+function wegit_continue()
+{
+  git commit -a -m "[请输入提交信息]"
+  git commit --amend
+  
+  remote_name=$(wegit_get_remote_name)
+  person_branch=$(wegit_get_person_branch)
+  git push $remote_name $person_branch:$person_branch 
+
+  dev_branch=$(wegit_get_dev_branch)
+  dev_branch_bak=$(wegit_get_dev_branch_bak)
+  git branch -m $dev_branch $dev_branch_bak
+  git checkout -b $dev_branch
+
+  wegit_info "push person branch done"
+}
+
+function wegit_get_root_path_dfs()
+{
+  cur_path=$1
+  if [ "$cur_path" = "/" ] && [ ! -d "$cur_path/.git" ] 
+  then
+    wegit_err "不是 git 仓库（或者任何父目录）：.git"
+    exit 1
+  fi
+
+  if [ -d "$cur_path/.git" ]
+  then
+    echo $cur_path
+  else
+    wegit_get_root_path_dfs $(dirname $cur_path)
+  fi
+}
+
+function wegit_get_root_path() # @unit_test 
+{
+  cur_path=$(pwd)
+  if [ -d ".git" ]
+  then
+    echo $cur_path
+  else
+    wegit_get_root_path_dfs $(dirname $cur_path)
+  fi
+}
+
+function wegit_get_person_branch() # @unit_test
+{
+  root_path=$(wegit_get_root_path)  
+  person_branch=$(cat $root_path/.wegit/person_branch)
+  echo $person_branch
+}
+
+function wegit_get_dev_branch() # @unit_test
+{
+  root_path=$(wegit_get_root_path)  
+  dev_branch=$(cat $root_path/.wegit/dev_branch)
+  echo $dev_branch
+}
+
+
+function wegit_get_dev_branch_bak() # @unit_test
+{
+  root_path=$(wegit_get_root_path)  
+  bak_ver=$(cat $root_path/.wegit/dev_branch_bak_ver)
+  new_bak_ver=$((bak_ver + 1))
+  echo "$new_bak_ver" > $root_path/.wegit/dev_branch_bak_ver
+  dev_branch=$(wegit_get_dev_branch)
+  echo ${dev_branch}_${bak_ver}
+}
+
+function wegit_get_remote_name() # @unit_test
+{
+  remote_name=$(git remote -v | grep push | awk '{print $1}')
+  echo $remote_name
+}
+
+function wegit_get_mr_branch() # @unit_test
+{
+  echo "br_mr"
+}
+
+function wegit_mr() # @unit_test
+{
+  if ! wegit_is_init
+  then
+    wegit_err "请先运行wegit init <branch>初始化wegit仓库"
+    wegit_usage
+  fi
+
+  remote_name=$(wegit_get_remote_name)
+  if [ -z $remote_name ]
+  then
+    wegit_err "请先关联远程仓库"
+    exit 1
+  fi
+
+  mr_branch=$(wegit_get_mr_branch)
+  git fetch $remote_name $mr_branch
+  dev_branch=$(wegit_get_dev_branch)
+  dev_branch_bak=$(wegit_get_dev_branch_bak)
+  git branch -m $dev_branch $dev_branch_bak
+  git checkout -b $dev_branch $remote_name/$mr_branch
+  
+  wegit_info "git mm upload -y ."
+  # git mm upload -y .
+}
+
+function wegit_test()
+{
+  local wegit_path=$(which wegit)
+  local function_list=$(cat $wegit_path | grep -E "^function.*@unit_test" | awk -F " " '{print $2}' | awk -F '(' '{print $1}')
+
+  local index=1
+  for function_name in $function_list
+  do
+    echo "$index $function_name"
+    function_id_name_map[$index]=$function_name 
+    index=$((index + 1))
+  done
+  
+  echo "输入你要测试的函数编号:"
+  read number
+  echo "输入你要测试的函数参数:"
+  read arg
+  ${function_id_name_map[$number]} $arg
+}
+
+
+wegit_main $1 $2
