@@ -1,0 +1,30 @@
+#!/bin/bash
+
+function wegit_usage()
+{
+  echo "wegit usage: wegit <command>"
+  echo "COMMAND:"
+  echo "  init          # 初始化wegit仓库"
+  echo "  push          # 将开发分支修改合并到主分支,然后推送到远程仓库"
+  echo "  continue      # 解决冲突后执行,继续推送到远程仓库"
+}
+
+function wegit_main()
+{
+  case $1 in
+    init)
+      wegit_init
+      ;;
+    push)
+      wegit_push
+      ;;
+    continue)
+      wegit_continue
+      ;;
+    *)
+      wegit_usage
+      ;;
+  esac
+}
+
+wegit_main $1
